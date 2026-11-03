@@ -14,6 +14,17 @@ from nxc.console import nxc_console
 from nxc.logger import nxc_logger
 from nxc.config import nxc_config, nxc_workspace, config_log
 from nxc.database import create_db_engine
+from nxc.run_manager import (
+    _build_run_id,
+    filter_completed_targets,
+    get_last_run_id,
+    parse_hhmm,
+    parse_run_days,
+    check_run_days,
+    wait_for_start_time,
+    is_past_end_time,
+    RunStateTracker,
+)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 from nxc.helpers import powershell
@@ -40,13 +51,29 @@ if platform.system() != "Windows":
     resource.setrlimit(resource.RLIMIT_NOFILE, file_limit)
 
 
-async def start_run(protocol_obj, args, db, targets):  # ruff: ignore[unused-async]
+async def start_run(protocol_obj, args, db, targets, state_tracker=None):  # ruff: ignore[unused-async]
+    end_hour = getattr(args, "_end_hour", None)
+    end_minute = getattr(args, "_end_minute", None)
+
+    def _run_target(target):
+        protocol_obj(args, db, target)
+        if state_tracker:
+            state_tracker.mark_done(target)
+
     futures = []
+    target_map = {}
     nxc_logger.debug("Creating ThreadPoolExecutor")
+
     if args.no_progress or len(targets) == 1:
         with ThreadPoolExecutor(max_workers=args.threads) as executor:
             nxc_logger.debug(f"Creating thread for {protocol_obj}")
-            futures = [executor.submit(protocol_obj, args, db, target) for target in targets]
+            for target in targets:
+                if end_hour is not None and is_past_end_time(end_hour, end_minute):
+                    nxc_logger.highlight(f"[!] End time {end_hour:02d}:{end_minute:02d} reached. Stopping new target submissions.")
+                    break
+                f = executor.submit(_run_target, target)
+                futures.append(f)
+                target_map[f] = target
     else:
         with Progress(console=nxc_console) as progress, ThreadPoolExecutor(max_workers=args.threads) as executor:
             current = 0
@@ -56,15 +83,23 @@ async def start_run(protocol_obj, args, db, targets):  # ruff: ignore[unused-asy
                 total=total,
             )
             nxc_logger.debug(f"Creating thread for {protocol_obj}")
-            futures = [executor.submit(protocol_obj, args, db, target) for target in targets]
+            for target in targets:
+                if end_hour is not None and is_past_end_time(end_hour, end_minute):
+                    nxc_logger.highlight(f"[!] End time {end_hour:02d}:{end_minute:02d} reached. Stopping new target submissions.")
+                    progress.update(tasks, total=current)
+                    break
+                f = executor.submit(_run_target, target)
+                futures.append(f)
+                target_map[f] = target
             for _ in as_completed(futures):
                 current += 1  # ruff: ignore[enumerate-for-loop]
                 progress.update(tasks, completed=current)
+
     for future in as_completed(futures):
         try:
             future.result()
         except Exception:
-            nxc_logger.exception(f"Exception for target {targets[futures.index(future)]}: {future.exception()}")
+            nxc_logger.exception(f"Exception for target {target_map.get(future, '?')}: {future.exception()}")
 
 
 def ctrl_c(sig, frame):
@@ -129,6 +164,43 @@ def main():
                     exit(1)
 
     targets = process_targets(args)
+
+    # --- Scheduling: validate and parse time/day options early ---
+    parsed_end = None
+    if hasattr(args, "start_time") and args.start_time:
+        try:
+            parse_hhmm(args.start_time)
+        except ValueError as e:
+            nxc_logger.error(str(e))
+            exit(1)
+
+    if hasattr(args, "end_time") and args.end_time:
+        try:
+            parsed_end = parse_hhmm(args.end_time)
+        except ValueError as e:
+            nxc_logger.error(str(e))
+            exit(1)
+
+    parsed_run_days = None
+    if hasattr(args, "run_days") and args.run_days:
+        try:
+            parsed_run_days = parse_run_days(args.run_days)
+        except ValueError as e:
+            nxc_logger.error(str(e))
+            exit(1)
+
+    # --- Resumption: filter out completed targets ---
+    run_id = _build_run_id(args, targets)
+    if hasattr(args, "resume") and args.resume is not None:
+        if args.resume == "last":
+            resume_id = get_last_run_id()
+            if resume_id is None:
+                nxc_logger.fail("No previous run found to resume.")
+                exit(1)
+            run_id = resume_id
+        else:
+            run_id = args.resume
+        targets = filter_completed_targets(run_id, targets)
 
     # The following is a quick hack for the powershell obfuscation functionality, I know this is yucky
     if hasattr(args, "clear_obfscripts") and args.clear_obfscripts:
@@ -214,8 +286,23 @@ def main():
     if args.jitter and len(targets) > 1:
         nxc_logger.highlight(highlight("[!] Jitter is only throttling authentications per target!", "red"))
 
+    # --- Scheduling: wait for valid run day and start time ---
+    if parsed_run_days:
+        check_run_days(parsed_run_days)
+
+    if hasattr(args, "start_time") and args.start_time:
+        sh, sm = parse_hhmm(args.start_time)
+        wait_for_start_time(sh, sm)
+
+    if parsed_end:
+        args._end_hour, args._end_minute = parsed_end
+    else:
+        args._end_hour = args._end_minute = None
+
+    state_tracker = RunStateTracker(run_id, args.protocol, targets)
+
     try:
-        asyncio.run(start_run(protocol_object, args, db, targets))
+        asyncio.run(start_run(protocol_object, args, db, targets, state_tracker))
     finally:
         db_engine.dispose()
 

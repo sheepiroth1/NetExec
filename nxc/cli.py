@@ -35,6 +35,12 @@ def gen_cli_args():
     generic_group.add_argument("--exclude-hosts", nargs="+", default=None, metavar="HOST", help="Exclude one or more hosts, IPs, CIDRs or hostnames from the scan")
     generic_group.add_argument("--skip-self", action="store_true", help="Exclude the local machine from the scan")
 
+    scheduling_group = generic_parser.add_argument_group("Scheduling & Resumption")
+    scheduling_group.add_argument("--resume", nargs="?", const="last", default=None, metavar="RUN_ID", help="Resume a previous run (default: last run). Skips already-completed targets")
+    scheduling_group.add_argument("--start-time", metavar="HHMM", help="Delay execution until this time of day (e.g. 0830 for 08:30)")
+    scheduling_group.add_argument("--end-time", metavar="HHMM", help="Stop launching new targets after this time of day (e.g. 1730 for 17:30)")
+    scheduling_group.add_argument("--run-days", metavar="DAYS", help="Only run on these days: 1=Mon,2=Tue,...,7=Sun. Comma-separated (e.g. 1,2,3,4,5 for weekdays)")
+
     output_parser = argparse.ArgumentParser(add_help=False, formatter_class=DisplayDefaultsNotNone)
     output_group = output_parser.add_argument_group("Output Options")
     output_group.add_argument("--no-progress", action="store_true", help="do not displaying progress bar during scan")

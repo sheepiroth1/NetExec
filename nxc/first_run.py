@@ -21,6 +21,7 @@ def first_run_setup(logger=nxc_logger):
         "workspaces",
         "obfuscated_scripts",
         "screenshots",
+        "runs",
     )
     for folder in folders:
         if not exists(path_join(NXC_PATH, folder)):
