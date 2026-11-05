@@ -54,6 +54,22 @@ def get_list_from_option(opt):
     return [o.lower() for o in filter(bool, opt.split(","))]
 
 
+def parse_file_size(size_str):
+    """Parses a human-readable file size string (e.g., '50KB', '1MB', '2GB') into bytes.
+    Plain integers are treated as bytes for backwards compatibility.
+    """
+    import re
+
+    size_str = size_str.strip().upper()
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)", size_str)
+    if not match:
+        raise ValueError(f'Invalid file size "{size_str}". Use a number with a unit (B, KB, MB, GB). Example: 50KB')
+    value = float(match.group(1))
+    unit = match.group(2)
+    multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+    return int(value * multipliers[unit])
+
+
 class SMBSpiderPlus:
     def __init__(
         self,
@@ -255,7 +271,7 @@ class SMBSpiderPlus:
 
             # Check file-dir exclusion filter.
             if any(d in next_filedir.lower() for d in self.exclude_filter):
-                self.logger.info(f'The {result_type} "{next_filedir}" has been excluded')
+                self.logger.display(f'Skipping {result_type} "{next_filedir}" (matches exclude filter)')
                 self.stats[f"num_{result_type}s_filtered"] += 1
                 continue
 
@@ -291,13 +307,13 @@ class SMBSpiderPlus:
             file_extension = file_extension.lstrip(".")
             self.stats["file_exts"].add(file_extension.lower())
             if file_extension.lower() in [ext.lstrip(".") for ext in self.exclude_exts]:
-                self.logger.info(f'The file "{file_path}" has an excluded extension.')
+                self.logger.display(f'Skipping "{file_path}" (excluded extension: .{file_extension})')
                 self.stats["num_files_filtered"] += 1
                 return
 
         # Check file size limits.
         if file_size > self.max_file_size:
-            self.logger.info(f"File {file_path} has size {human_size(file_size)} > max size {human_size(self.max_file_size)}.")
+            self.logger.display(f'Skipping "{file_path}" (file size {human_size(file_size)} exceeds max {human_size(self.max_file_size)})')
             self.stats["num_files_filtered"] += 1
             return
 
@@ -319,7 +335,7 @@ class SMBSpiderPlus:
         needs_update_flag = False
         if exists(download_path):
             if file_modified_time <= stat(download_path).st_mtime and getsize(download_path) == file_size:
-                self.logger.info(f'File already downloaded "{file_path}" => "{download_path}".')
+                self.logger.display(f'Skipping "{file_path}" (already downloaded and unmodified)')
                 self.stats["num_files_unmodified"] += 1
                 return
             else:
@@ -335,7 +351,7 @@ class SMBSpiderPlus:
             download_success = True
         except SessionError as e:
             if "STATUS_SHARING_VIOLATION" in str(e):
-                self.logger.debug(f"Sharing violation while downloading file: {file_path}")
+                self.logger.display(f'Skipping "{file_path}" (sharing violation - file in use)')
         except Exception as e:
             self.logger.fail(f'Failed to download file "{file_path}". Error: {e!s}')
 
@@ -488,7 +504,7 @@ class NXCModule:
         STATS_FLAG        Disable file/download statistics (Default: True)
         EXCLUDE_EXTS      Case-insensitive extension filter to exclude (Default: ico,lnk)
         EXCLUDE_FILTER    Case-insensitive filter to exclude folders/files (Default: print$,ipc$)
-        MAX_FILE_SIZE     Max file size to download (Default: 51200)
+        MAX_FILE_SIZE     Max file size to download, supports B/KB/MB/GB suffixes (Default: 50KB)
         OUTPUT_FOLDER     Path of the local folder to save files (Default: NXC_PATH/nxc_spider_plus)
         """
         self.download_flag = False
@@ -501,7 +517,7 @@ class NXCModule:
         self.exclude_exts = [d.lower() for d in self.exclude_exts]  # force case-insensitive
         self.exclude_filter = get_list_from_option(module_options.get("EXCLUDE_FILTER", "print$,ipc$"))
         self.exclude_filter = [d.lower() for d in self.exclude_filter]  # force case-insensitive
-        self.max_file_size = int(module_options.get("MAX_FILE_SIZE", 50 * 1024))
+        self.max_file_size = parse_file_size(str(module_options.get("MAX_FILE_SIZE", "50KB")))
         self.output_folder = module_options.get("OUTPUT_FOLDER", abspath(join(NXC_PATH, "modules/nxc_spider_plus")))
 
     def on_login(self, context, connection):
