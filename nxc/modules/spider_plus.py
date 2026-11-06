@@ -119,13 +119,15 @@ class SMBSpiderPlus:
         """
         for i in range(1, self.max_connection_attempts + 1):
             self.logger.display(f"Reconnection attempt #{i}/{self.max_connection_attempts} to server.")
-
-            # Renegotiate the session
             time.sleep(3)
-            self.smb.create_conn_obj()
-            self.smb.login()
-            return True
+            try:
+                self.smb.create_conn_obj()
+                self.smb.login()
+                return True
+            except Exception as e:
+                self.logger.debug(f"Reconnection attempt #{i} failed: {e}")
 
+        self.logger.fail(f"Failed to reconnect after {self.max_connection_attempts} attempts.")
         return False
 
     def list_path(self, share, subfolder):
@@ -147,9 +149,17 @@ class SMBSpiderPlus:
             elif "STATUS_NO_SUCH_FILE" in str(e):
                 self.logger.debug(f"The folder {subfolder} is empty.")
             elif self.reconnect():
-                filelist = self.list_path(share, subfolder)
+                try:
+                    filelist = self.smb.conn.listPath(share, subfolder + "*")
+                except Exception:
+                    self.logger.debug(f'Failed listing files on share "{share}" in folder "{subfolder}" after reconnect.')
         except NetBIOSTimeout as e:
             self.logger.debug(f'Failed listing files on share "{share}" in folder "{subfolder}": {e!s}')
+            if self.reconnect():
+                try:
+                    filelist = self.smb.conn.listPath(share, subfolder + "*")
+                except Exception:
+                    self.logger.debug(f'Failed listing files on share "{share}" in folder "{subfolder}" after reconnect.')
         return filelist
 
     def get_remote_file(self, share, path):
@@ -158,7 +168,10 @@ class SMBSpiderPlus:
             return RemoteFile(self.smb.conn, path, share, access=FILE_READ_DATA)
         except SessionError:
             if self.reconnect():
-                return self.get_remote_file(share, path)
+                try:
+                    return RemoteFile(self.smb.conn, path, share, access=FILE_READ_DATA)
+                except SessionError:
+                    return None
 
     def read_chunk(self, remote_file, chunk_size=CHUNK_SIZE):
         """Reads the next chunk of data from the provided remote file using the specified chunk size.
@@ -176,9 +189,7 @@ class SMBSpiderPlus:
 
             except SessionError:
                 if self.reconnect():
-                    # Little hack to reset the smb connection instance
                     remote_file.__smbConnection = self.smb.conn
-                    return self.read_chunk(remote_file)
 
             except Exception as e:
                 self.logger.exception(e)
