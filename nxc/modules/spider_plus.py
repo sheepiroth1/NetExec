@@ -357,7 +357,7 @@ class SMBSpiderPlus:
         try:
             self.logger.info(f'Downloading file "{file_path}" => "{download_path}".')
             remote_file.open_file()
-            self.save_file(remote_file, share_name, download_path)
+            self.save_file(remote_file, share_name, download_path, file_size)
             remote_file.close()
             download_success = True
         except SessionError as e:
@@ -374,7 +374,7 @@ class SMBSpiderPlus:
         else:
             self.stats["num_get_fail"] += 1
 
-    def save_file(self, remote_file, share_name, download_path):
+    def save_file(self, remote_file, share_name, download_path, expected_size):
         """Reads the `remote_file` in chunks using the `read_chunk` method.
 
         Each chunk is then written to the local file until the entire file is saved.
@@ -398,7 +398,7 @@ class SMBSpiderPlus:
             self.logger.fail(f'Error writing file "{download_path}" from share "{share_name}": {e}')
 
         # Check if the file is empty and should not be.
-        if getsize(download_path) == 0 and remote_file.get_filesize() > 0:
+        if getsize(download_path) == 0 and expected_size > 0:
             remove(download_path)
             remote_path = str(remote_file)[2:]
             self.logger.fail(f'Unable to download file "{remote_path}".')
